@@ -331,7 +331,7 @@ def main():
     scope=Scope(store,host or '',args.interval)
     server=Server((args.bind,args.port),Handler);server.scope=scope
     thread=threading.Thread(target=scope.collect,daemon=True);thread.start()
-    print(f'Thermal Scope: http://{args.bind}:{args.port} • device {host or 'not configured'} • {1/args.interval:g} Hz',flush=True)
+    print(f"Thermal Scope: http://{args.bind}:{args.port} • device {host or 'not configured'} • {1/args.interval:g} Hz",flush=True)
     def terminate(signum,frame):raise KeyboardInterrupt
     signal.signal(signal.SIGTERM,terminate)
     try:server.serve_forever()
