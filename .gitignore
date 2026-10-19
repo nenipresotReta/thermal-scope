@@ -1,0 +1,33 @@
+# Local runtime state, captures and earlier experiments
+data/
+verification/
+__pycache__/
+*.py[cod]
+*.sqlite*
+*.db
+*.db-*
+*.csv
+*.log
+*.png
+*.jpg
+*.jpeg
+*.zip
+*.tar*
+.env
+.env.*
+!.env.example
+# Never distribute device firmware or Wi-Fi material in this application repo
+firmware/
+backups/
+build/
+build-*/
+local/
+*.bin
+*.elf
+*.hex
+*.uf2
+*.map
+wifi_credentials*
+*credentials*.json
+*secrets*.json
+.DS_Store
