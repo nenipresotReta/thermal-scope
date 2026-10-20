@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.3.0 — 2026-10-21
 
 - GitHub Dark and Paper themes, with persistent per-browser selection and matching chart colors.
 - Recover shared recording state after browser reconnection, including when the probe is offline; prevent late HTTP snapshots from replacing newer events.
