@@ -6,6 +6,7 @@ from thermal_model import predict
 from calibration import fit_step
 from learning import Ledger,forecast,HORIZONS
 from thermal_model import VERSION
+from roast import DropMonitor, metrics, weights
 from devices import Discovery,probe_device,validate_host,suggested_networks
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -46,6 +47,14 @@ class Store:
             CREATE UNIQUE INDEX IF NOT EXISTS one_active_calibration ON calibrations((1)) WHERE end IS NULL;
             CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY, run_id INTEGER REFERENCES runs(id), t REAL NOT NULL, label TEXT NOT NULL, temperature REAL);
             ''')
+            for table, definitions in {
+                'runs': {'mode': "TEXT NOT NULL DEFAULT 'coffee'", 'auto_drop': 'INTEGER NOT NULL DEFAULT 1', 'green_weight_g': 'REAL', 'roasted_weight_g': 'REAL'},
+                'events': {'source': "TEXT NOT NULL DEFAULT 'manual'", 'detected_at': 'REAL'},
+            }.items():
+                present={r[1] for r in db.execute('PRAGMA table_info('+table+')')}
+                for name, definition in definitions.items():
+                    if name not in present:db.execute('ALTER TABLE '+table+' ADD COLUMN '+name+' '+definition)
+            db.execute('CREATE INDEX IF NOT EXISTS events_run ON events(run_id,t)')
             columns={r[1] for r in db.execute('PRAGMA table_info(forecasts)')}
             if 'model_snapshot' not in columns:db.execute('ALTER TABLE forecasts ADD COLUMN model_snapshot TEXT')
             if 'trainable' not in columns:db.execute('ALTER TABLE forecasts ADD COLUMN trainable INTEGER NOT NULL DEFAULT 1')
@@ -55,7 +64,13 @@ class Store:
         db.execute('PRAGMA foreign_keys=ON')
         return db
     def runs(self):
-        with self.connect() as db: return [dict(r) for r in db.execute('SELECT * FROM runs ORDER BY start DESC LIMIT 100')]
+        with self.connect() as db:
+            rows=[dict(r) for r in db.execute('''SELECT r.*,
+                (SELECT min(t) FROM events WHERE run_id=r.id AND label='FC START') fc_start,
+                (SELECT min(t) FROM events WHERE run_id=r.id AND label='DROP' AND r.mode='coffee') drop_t,
+                (SELECT source FROM events WHERE run_id=r.id AND label='DROP' ORDER BY t LIMIT 1) drop_source
+                FROM runs r ORDER BY start DESC LIMIT 100''')]
+            return [{**r, **metrics(r,time.time())} for r in rows]
     def calibrations(self):
         with self.connect() as db:
             return [{**dict(r),'result':json.loads(r['result']) if r['result'] else None} for r in db.execute('SELECT * FROM calibrations ORDER BY start DESC LIMIT 50')]
@@ -74,6 +89,8 @@ class Scope:
     def __init__(self, store, host, interval):
         self.store, self.host, self.interval = store, host, interval
         self.source_revision=0
+        self.auto_check_at=0
+        self.drop_monitor=DropMonitor()
         self.config_lock=threading.Lock()
         self.discovery=Discovery()
         self.lock = threading.Lock()
@@ -161,6 +178,7 @@ class Scope:
                     self.latest=row; self.state.update(connected=True,message='Live',latency_ms=round((time.monotonic()-begin)*1000,1))
                 self.publish('sample',row)
                 self.recent.append(row)
+                self.check_auto_drop(db,row)
                 models=self.models
                 issued=self.ledger.tick(db,row,list(self.recent),models)
                 if issued:
@@ -182,6 +200,22 @@ class Scope:
                 self.stop.wait(1);next_tick=time.monotonic()
         db.commit();db.close()
         if sock: sock.close()
+    def check_auto_drop(self, db, row):
+        if row['t']-self.auto_check_at < .5:return
+        self.auto_check_at=row['t']
+        run=db.execute("SELECT * FROM runs WHERE end IS NULL AND mode='coffee' AND auto_drop=1").fetchone()
+        event=self.drop_monitor.update(list(self.recent),run)
+        with self.lock:self.state['drop_detection']=self.drop_monitor.status(row['t'])
+        self.publish('drop_detection',self.state['drop_detection'])
+        if event is None:return
+        changed=db.execute('UPDATE runs SET end=? WHERE id=? AND end IS NULL',(event['t'],run['id'])).rowcount
+        if not changed:return
+        db.execute("INSERT INTO events(run_id,t,label,temperature,source,detected_at) VALUES(?,?,'DROP',?,'auto',?)",
+                   (run['id'],event['t'],event['temperature'],event['detected_at']))
+        db.commit()
+        with self.lock:self.state['drop_detection']=None
+        self.publish('records',{'runs':self.store.runs(),'events':self.store.events(row['t']-86400)})
+
     def calibrate(self, data):
         action=data.get('action');now=time.time()
         with self.store.connect() as db:
@@ -208,11 +242,16 @@ class Scope:
         with self.lock: latest = dict(self.latest) if self.latest else None
         temperature=latest['temperature'] if latest and now-latest['t']<2 else None
         with self.store.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
             active=db.execute('SELECT * FROM runs WHERE end IS NULL').fetchone()
             if kind=='start':
                 if active: raise ValueError('A recording is already active')
                 name=str(data.get('name') or datetime.now().strftime('Roast %Y-%m-%d %H:%M'))[:100]
-                db.execute('INSERT INTO runs(name,start) VALUES(?,?)',(name,now))
+                mode=data.get('mode','coffee')
+                if mode not in ('coffee','general'):raise ValueError('Choose coffee or general mode')
+                auto=data.get('auto_drop',True)
+                if not isinstance(auto,bool):raise ValueError('auto_drop must be true or false')
+                db.execute('INSERT INTO runs(name,start,mode,auto_drop) VALUES(?,?,?,?)',(name,now,mode,int(auto and mode=='coffee')))
             elif kind=='stop':
                 if not active: raise ValueError('No recording is active')
                 db.execute('UPDATE runs SET end=? WHERE id=?',(now,active['id']))
@@ -221,11 +260,36 @@ class Scope:
                 if not active: raise ValueError('Start a recording before adding events')
                 if not label or len(label)>100: raise ValueError('Event label must be 1–100 characters')
                 db.execute('INSERT INTO events(run_id,t,label,temperature) VALUES(?,?,?,?)',(active['id'],now,label,temperature))
-                if label=='DROP': db.execute('UPDATE runs SET end=? WHERE id=?',(now,active['id']))
+                if active['mode']=='coffee' and label=='DROP': db.execute('UPDATE runs SET end=? WHERE id=?',(now,active['id']))
+            elif kind=='auto_drop':
+                if not active or active['mode']!='coffee':raise ValueError('Auto DROP is available during coffee recordings only')
+                enabled=data.get('enabled')
+                if not isinstance(enabled,bool):raise ValueError('enabled must be true or false')
+                db.execute('UPDATE runs SET auto_drop=? WHERE id=?',(int(enabled),active['id']))
+            elif kind=='weights':
+                run_id=data.get('run_id')
+                if isinstance(run_id,bool) or not isinstance(run_id,int):raise ValueError('Invalid recording ID')
+                run=db.execute('SELECT * FROM runs WHERE id=?',(run_id,)).fetchone()
+                if run is None or run['end'] is None or run['mode']!='coffee':raise ValueError('Weights are available for completed coffee recordings only')
+                green,roasted=weights(data.get('green_weight_g'),data.get('roasted_weight_g'))
+                db.execute('UPDATE runs SET green_weight_g=?,roasted_weight_g=? WHERE id=?',(green,roasted,run_id))
+            elif kind=='undo_drop':
+                if active:raise ValueError('Finish the active recording before reopening another')
+                run_id=data.get('run_id')
+                if isinstance(run_id,bool) or not isinstance(run_id,int):raise ValueError('Invalid recording ID')
+                latest_id=db.execute('SELECT id FROM runs ORDER BY start DESC LIMIT 1').fetchone()
+                if latest_id is None or latest_id[0]!=run_id:raise ValueError('Only the latest recording can be reopened')
+                event=db.execute("SELECT * FROM events WHERE run_id=? AND label='DROP' AND source='auto' ORDER BY t DESC LIMIT 1",(run_id,)).fetchone()
+                if event is None:raise ValueError('No automatic DROP to undo')
+                db.execute('DELETE FROM events WHERE id=?',(event['id'],))
+                db.execute('UPDATE runs SET end=NULL,auto_drop=0 WHERE id=?',(run_id,))
             elif kind=='undo':
                 if not active: raise ValueError('No recording is active')
                 db.execute('DELETE FROM events WHERE id=(SELECT id FROM events WHERE run_id=? ORDER BY id DESC LIMIT 1)',(active['id'],))
             else: raise ValueError('Unknown action')
+        if kind=='auto_drop':
+            self.drop_monitor=DropMonitor()
+            with self.lock:self.state['drop_detection']=None
         result={'runs':self.store.runs(),'events':self.store.events(now-86400)}
         self.publish('records',result)
         return result
@@ -275,7 +339,7 @@ class Handler(BaseHTTPRequestHandler):
                     if not run: return self.reply({'error':'Recording not found'},404)
                     rows=db.execute('SELECT t,raw,temperature,d1,d2 FROM samples WHERE t BETWEEN ? AND ? ORDER BY t',(run['start'],run['end'] or time.time()))
                     text=io.StringIO();w=csv.writer(text);w.writerow(('timestamp_utc','elapsed_s','raw_c','temperature_c','d1_c_per_s','d2_c_per_s2','events'))
-                    events=self.scope.store.events(run['start'],run['end'] or time.time());ei=0
+                    events=[e for e in self.scope.store.events(run['start'],run['end'] or time.time()) if e['run_id']==run_id];ei=0
                     for r in rows:
                         labels=[]
                         while ei<len(events) and events[ei]['t']<=r['t']: labels.append(events[ei]['label']);ei+=1
@@ -298,7 +362,7 @@ class Handler(BaseHTTPRequestHandler):
                     with self.scope.lock:self.scope.subscribers.discard(sub)
                 self.close_connection=True
                 return
-            assets={'/':('index.html','text/html; charset=utf-8'),'/plot-scale.js':('plot-scale.js','text/javascript; charset=utf-8'),'/app.js':('app.js','text/javascript; charset=utf-8'),'/style.css':('style.css','text/css; charset=utf-8')}
+            assets={'/recording.js':('recording.js','text/javascript; charset=utf-8'),'/':('index.html','text/html; charset=utf-8'),'/plot-scale.js':('plot-scale.js','text/javascript; charset=utf-8'),'/app.js':('app.js','text/javascript; charset=utf-8'),'/style.css':('style.css','text/css; charset=utf-8')}
             if path in assets:
                 name,mime=assets[path];return self.reply((ROOT/'static'/name).read_bytes(),mime=mime)
             self.reply({'error':'Not found'},404)

@@ -116,3 +116,19 @@ Node is only needed for development checks, not runtime. Tests cover device dete
 The release audit rejects tracked firmware, binaries, runtime databases, captures and detected credential patterns. `.gitignore` and `.dockerignore` exclude local runtime material. These safeguards supplement the explicit reviewed source-file list; they are not permission to add firmware or secrets.
 
 References: [Artisan chart behavior](https://github.com/artisan-roaster-scope/artisan/blob/master/src/artisanlib/canvas.py), [MIT lumped thermal analysis](https://web.mit.edu/16.unified/www/FALL/thermodynamics/notes/node129.html). The implementation is independent; no Artisan source is bundled.
+
+### Coffee and general recordings (v0.2)
+
+Before START choose **COFFEE** or **GENERAL / NON-COFFEE**. Coffee enables phase marks, development time and optional AUTO DROP. General mode has manual custom events, no automatic detection and no coffee development/weight calculations.
+
+In a recording, the time axis starts at **00:00**, initially spans **16 minutes**, and expands to retain the complete recording and forecast space. LIVE scroll still zooms temperature from zero; HOLD allows manual time inspection. Archive initially fits the whole recording.
+
+After **FC START**, the prominent development display updates continuously: `(now − FC START) / (now − recording start) × 100%`. At DROP (or STOP without DROP) it freezes. The denominator is recording time, not a later CHARGE marker. Historical manual marks are retained exactly as entered.
+
+**AUTO DROP** is a retrospective sudden-cooling heuristic, independently implemented with reference to Artisan's behavior. It does not predict the desired roast endpoint or control a heater. Eligible coffee recordings must be at least 7 minutes long with a recent raw temperature >=160°C. Half-second raw medians must show >=3°C total cooling and a sustained slope <=−0.8°C/s over >=2 s. A candidate then waits **20 seconds**, requires >=15°C net cooling, and is rejected on a >=5°C rebound, recovery near the previous peak, or acquisition gap >1 s. The final DROP is backdated to the preceding local peak, not the confirmation time. Dismiss a candidate with **IGNORE / DISABLE**, or switch AUTO DROP off. Archive → **UNDO AUTO DROP** reopens the latest automatically ended recording and disables automatic detection for that run; samples were never deleted. Earlier recordings cannot be reopened across newer sessions.
+
+A temperature probe alone cannot distinguish an actual DROP from a long accidental probe removal with the same thermal trace. The confirmation delay filters short disturbances; manual control/correction remains available. Reboot clears an unconfirmed candidate rather than inventing an event across missing data.
+
+For a completed coffee recording, Archive → **ADD WEIGHTS / EDIT WEIGHTS** stores green and roasted weights in grams. Weight loss is `(green − roasted) / green × 100%`; both values must be positive and roasted <= green. Values are optional, editable, clearable and persist with that recording. The CSV retains its existing seven-column sample format; weight metadata and development summaries are available in `/api/runs` and the Archive UI.
+
+Behavior references: [Artisan auto-DROP explanation](https://github.com/artisan-roaster-scope/artisan/discussions/1159), [official source](https://github.com/artisan-roaster-scope/artisan/blob/master/src/artisanlib/canvas.py). No Artisan source implementation is included in this project.

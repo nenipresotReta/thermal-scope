@@ -62,6 +62,16 @@ class ServiceTest(unittest.TestCase):
   self.assertEqual(len(rows[0]),7);self.assertIn('d1_c_per_s',rows[0]);self.assertIn('DROP',str(rows))
   restored=Store(self.store.path);self.assertEqual(restored.runs()[0]['name'],'Integration test')
   with self.get('/api/history?start='+str(start-1)) as r:self.assertEqual(len(json.load(r)['samples']),1)
+ def test_recording_script_and_weight_api(self):
+  with self.get('/recording.js') as r:self.assertIn(b'function recordingWindow',r.read())
+  run=self.action('start',name='Coffee weights',mode='coffee')['runs'][0]
+  self.action('event',label='FC START')
+  self.action('stop')
+  saved=self.action('weights',run_id=run['id'],green_weight_g=200,roasted_weight_g=170)['runs'][0]
+  self.assertEqual(saved['weight_loss_pct'],15)
+  self.assertGreaterEqual(saved['development_s'],0)
+  restored=Store(self.store.path).runs()[0];self.assertEqual(restored['green_weight_g'],200)
+  with self.assertRaises(urllib.error.HTTPError):self.action('weights',run_id=run['id'],green_weight_g=200,roasted_weight_g=201)
  def test_invalid_write_and_history(self):
   with self.assertRaises(urllib.error.HTTPError):self.action('event',label='CHARGE')
   req=urllib.request.Request(self.url+'/api/action',data=b'{"action":"start"}',headers={'Content-Type':'application/json','Origin':'http://other.invalid'})

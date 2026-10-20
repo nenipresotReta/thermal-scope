@@ -1,0 +1,12 @@
+const assert=require('node:assert/strict');
+const {recordingWindow,developmentMetrics,recordingTicks}=require('../static/recording.js');
+const run={start:1000,end:null,mode:'coffee',fc_start:1600,drop_t:null};
+let a=recordingWindow(run,1600);assert.equal(a.start,1000);assert.equal(a.span,960);assert.equal(a.end-a.span,1000);
+let b=recordingWindow(run,2300);assert.ok(b.span>=1600);assert.equal(b.end-b.span,1000);assert.ok(b.end>=2600);
+assert.deepEqual(developmentMetrics(run,1800),{seconds:200,percent:25,live:true});
+assert.deepEqual(developmentMetrics({...run,end:1800,drop_t:1750},9999),{seconds:150,percent:20,live:false});
+assert.equal(developmentMetrics({...run,mode:'general'},1800),null);
+assert.equal(developmentMetrics({...run,fc_start:null},1800),null);
+assert.deepEqual(recordingTicks(1000,1960,1000),[1000,1120,1240,1360,1480,1600,1720,1840,1960]);
+assert.equal(recordingWindow({...run,end:1900},99999).start,1000);
+console.log('PASS: recording zero remains fixed, full-session fit, live/frozen development ratio and readable ticks');
