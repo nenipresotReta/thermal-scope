@@ -28,7 +28,7 @@ function updateRecords(){
  if(run)$('autoDrop').checked=!!run.auto_drop;
  $('autoDrop').disabled=!!viewed;
  const pending=active?.auto_drop&&status.drop_detection&&!viewed?status.drop_detection:null;
- $('autoDropNote').textContent=mode!=='coffee'?'Manual events only · no automatic detection':pending?'DROP CANDIDATE · verifying '+Math.max(0,Math.ceil(pending.confirm_at-Date.now()/1000))+' s':run&&!run.auto_drop?'AUTO DROP OFF':run?.drop_source==='auto'?'DROP CONFIRMED · RETROSPECTIVE':run?.end?'RECORDING COMPLETE':'Sustained cooling · 20 s confirmation';
+ $('autoDropNote').textContent=mode!=='coffee'?'Manual events only · no automatic detection':pending?(pending.confirm_at>Date.now()/1000?'DROP CANDIDATE · verifying '+Math.ceil(pending.confirm_at-Date.now()/1000)+' s':'DROP CANDIDATE · awaiting sustained cooling'):run&&!run.auto_drop?'AUTO DROP OFF':run?.drop_source==='auto'?'DROP CONFIRMED · RETROSPECTIVE':run?.end?'RECORDING COMPLETE':'Sustained cooling · 20 s confirmation';
  $('dismissDrop').hidden=!pending;
  const list=run?events.filter(e=>e.run_id===run.id):[];
  $('events').replaceChildren();
@@ -64,7 +64,7 @@ function refreshReading(){
  $('statusNote').textContent=stale?(status.message==='Live'?'Input is stale':status.message||'Reconnecting'):'Continuous acquisition · Persistent history';
  $('modelState').textContent='THERMAL · '+(prediction.reason||'WAITING');$('modelParams').textContent=prediction.identifiable?'τ '+num(prediction.tau_s,1)+' s · Teq '+num(prediction.equilibrium_c,1)+' °C · 5 min / CONSTANT P / G / Ta':'τ / Teq UNRESOLVED · 5 min / CONSTANT P / G / Ta';
  $('viewLabel').textContent=viewed?'ARCHIVE':live?'LIVE':'HOLD';$('hold').classList.toggle('selected',!live&&!viewed);$('live').classList.toggle('selected',live&&!viewed);$('hold').textContent=live?'Ⅱ HOLD':'▶ RUN';
- const div=span/10;let custom=$('timeDiv').querySelector('[data-custom]');if(!Array.from($('timeDiv').options).some(o=>!o.dataset.custom&&Math.abs(Number(o.value)-div)<.001)){if(!custom){custom=document.createElement('option');custom.dataset.custom='1';$('timeDiv').append(custom);}custom.value=String(div);custom.textContent=div<60?div.toFixed(1)+' s':(div/60).toFixed(1)+' min';$('timeDiv').value=custom.value;}else $('timeDiv').value=String(div);
+ const axisRun=viewed||active, axisTicks=axisRun?recordingTicks(end-span,end,axisRun.start):[];const div=axisTicks.length>1?axisTicks[1]-axisTicks[0]:span/10;let custom=$('timeDiv').querySelector('[data-custom]');if(!Array.from($('timeDiv').options).some(o=>!o.dataset.custom&&Math.abs(Number(o.value)-div)<.001)){if(!custom){custom=document.createElement('option');custom.dataset.custom='1';$('timeDiv').append(custom);}custom.value=String(div);custom.textContent=div<60?div.toFixed(1)+' s':(div/60).toFixed(1)+' min';$('timeDiv').value=custom.value;}else $('timeDiv').value=String(div);
  $('windowLabel').textContent=(span>=60?(span/60).toFixed(span%60?1:0)+' min':nice(span)+' s')+' WINDOW';
 }
 function startStream(){

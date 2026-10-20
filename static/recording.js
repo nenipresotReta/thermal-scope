@@ -13,7 +13,7 @@ function developmentMetrics(run,now){
  return {seconds:duration,percent:total>0?100*duration/total:0,live:run.end===null};
 }
 function recordingTicks(start,end,zero){
- const range=end-start,target=range/8;
+ const range=end-start,target=range/10;
  const step=[15,30,60,120,180,300,600,900,1800,3600,7200,14400].find(s=>s>=target)||Math.ceil(target/3600)*3600;
  const result=[];
  for(let i=Math.ceil((start-zero)/step);zero+i*step<=end+.001;i++)result.push(zero+i*step);
