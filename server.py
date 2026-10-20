@@ -16,6 +16,12 @@ from urllib.parse import urlsplit, parse_qs
 ROOT = Path(__file__).parent
 EVENTS = ('CHARGE', 'DRY END', 'FC START', 'FC END', 'SC START', 'DROP', 'EVENT')
 
+def csv_text(value):
+    """Keep user-entered labels literal when opened by spreadsheet software."""
+    if value.lstrip().startswith(('=', '+', '-', '@')) or value.startswith(('\t', '\r', '\n')):
+        return "'" + value
+    return value
+
 def receive(sock, count):
     result = bytearray()
     while len(result) < count:
@@ -58,6 +64,9 @@ class Store:
             columns={r[1] for r in db.execute('PRAGMA table_info(forecasts)')}
             if 'model_snapshot' not in columns:db.execute('ALTER TABLE forecasts ADD COLUMN model_snapshot TEXT')
             if 'trainable' not in columns:db.execute('ALTER TABLE forecasts ADD COLUMN trainable INTEGER NOT NULL DEFAULT 1')
+            if 'source' not in columns:db.execute("ALTER TABLE forecasts ADD COLUMN source TEXT NOT NULL DEFAULT ''")
+            db.execute('CREATE INDEX IF NOT EXISTS forecast_source_pending ON forecasts(source,target) WHERE actual IS NULL')
+            db.execute('CREATE INDEX IF NOT EXISTS forecast_export_order ON forecasts(created,horizon)')
     def connect(self):
         db = sqlite3.connect(self.path, timeout=5, factory=ClosingConnection)
         db.row_factory = sqlite3.Row
@@ -99,7 +108,7 @@ class Scope:
         self.recent = deque(maxlen=1200)
         self.prediction = forecast({},[])
         self.model_at = 0
-        self.ledger=Ledger()
+        self.ledger=Ledger(host)
         self.models={}  # Never load old unconstrained regression weights.
         self.state = {'connected':False, 'message':'Connecting' if host else 'Select a device', 'host':host, 'interval':interval,'timestamp_source':'server_receipt'}
         self.stop = threading.Event()
@@ -134,7 +143,11 @@ class Scope:
                 except queue.Full:
                     # Disconnect slow viewers; on reconnect they backfill from SQLite.
                     self.subscribers.discard(q)
-                    while not q.empty(): q.get_nowait()
+                    # The consumer can remove the last item between empty()
+                    # and get_nowait(); drain by handling that atomic result.
+                    while True:
+                        try:q.get_nowait()
+                        except queue.Empty:break
                     q.put_nowait(None)
     def status(self):
         with self.lock:
@@ -152,7 +165,7 @@ class Scope:
                 with self.lock:host=self.host;revision=self.source_revision
                 if revision!=connection_revision:
                     if sock:sock.close();sock=None
-                    db.commit();self.recent.clear();self.ledger=Ledger();connection_revision=revision
+                    db.commit();self.recent.clear();self.ledger=Ledger(host);connection_revision=revision
                 if not host:
                     self.stop.wait(.5);continue
                 if sock is None:
@@ -164,7 +177,9 @@ class Scope:
                 h=receive(sock,7); transaction,protocol,n,unit=struct.unpack('>HHHB',h)
                 if transaction!=tid or protocol!=0 or unit!=1 or not 2<=n<=254: raise ValueError('Invalid Modbus header')
                 body=receive(sock,n-1)
-                if body[0]&128: raise ValueError('Sensor unavailable / warming up (Modbus %d)'%body[1])
+                if body[0]&128:
+                    if len(body)!=2 or body[0]!=0x83:raise ValueError('Invalid Modbus exception response')
+                    raise ValueError('Sensor unavailable / warming up (Modbus %d)'%body[1])
                 if body[:2]!=b'\x03\x10' or len(body)!=18: raise ValueError('Invalid Modbus response')
                 values=struct.unpack('>ffff',body[2:])
                 if not all(math.isfinite(x) for x in values): raise ValueError('Invalid sensor values')
@@ -189,10 +204,15 @@ class Scope:
                 # Never burst old polls after a delay.
                 next_tick=max(next_tick,time.monotonic())
                 self.stop.wait(max(0,next_tick-time.monotonic()))
-            except (OSError,ValueError,ConnectionError) as e:
+            except (OSError,ValueError,ConnectionError,sqlite3.Error) as e:
                 if sock:
                     sock.close();sock=None
-                db.commit()
+                try:
+                    if isinstance(e,sqlite3.Error):db.rollback()
+                    else:db.commit()
+                except sqlite3.Error as storage_error:
+                    e=storage_error
+                    db.rollback()
                 with self.lock:
                     self.state.update(connected=False,message=str(e))
                     self.prediction={'valid':False,'reason':'STALE INPUT','points':[]}
@@ -217,6 +237,9 @@ class Scope:
         self.publish('records',{'runs':self.store.runs(),'events':self.store.events(row['t']-86400)})
 
     def calibrate(self, data):
+        # A device change must not race the active-session check.
+        with self.config_lock:return self._calibrate(data)
+    def _calibrate(self, data):
         action=data.get('action');now=time.time()
         with self.store.connect() as db:
             current=db.execute('SELECT * FROM calibrations WHERE end IS NULL').fetchone()
@@ -237,6 +260,8 @@ class Scope:
             else:raise ValueError('Unknown calibration action')
         result=self.store.calibrations();self.publish('calibration',result);return result
     def action(self, data):
+        with self.config_lock:return self._action(data)
+    def _action(self, data):
         kind=data.get('action'); now=time.time()
         # Snapshot outside the write transaction; collector doesn't hold lock during I/O.
         with self.lock: latest = dict(self.latest) if self.latest else None
@@ -310,6 +335,22 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(data,bytes): data=json.dumps(data,allow_nan=False).encode()
         self.send_response(status);self.send_header('Content-Type',mime);self.send_header('Content-Length',str(len(data)))
         self.send_header('Cache-Control','no-store');self.send_header('X-Content-Type-Options','nosniff');self.end_headers();self.wfile.write(data)
+    def reply_csv(self, rows):
+        # Forecasts grow while the device is online; never materialize an entire
+        # export or a second encoded copy in the small container's memory.
+        self.send_response(200);self.send_header('Content-Type','text/csv; charset=utf-8')
+        self.send_header('Transfer-Encoding','chunked');self.send_header('Cache-Control','no-store')
+        self.send_header('X-Content-Type-Options','nosniff');self.end_headers()
+        text=io.StringIO();writer=csv.writer(text)
+        def flush():
+            payload=text.getvalue().encode()
+            if payload:
+                self.wfile.write(('%x\r\n'%len(payload)).encode()+payload+b'\r\n')
+                text.seek(0);text.truncate(0)
+        for row in rows:
+            writer.writerow(row)
+            if text.tell()>=32768:flush()
+        flush();self.wfile.write(b'0\r\n\r\n')
     def do_GET(self):
         parts=urlsplit(self.path); q=parse_qs(parts.query);path=parts.path
         try:
@@ -329,24 +370,29 @@ class Handler(BaseHTTPRequestHandler):
             if path=='/api/events': return self.reply(self.scope.store.events(time.time()-86400))
             if path=='/api/forecast-export':
                 with self.scope.store.connect() as db:
-                    text=io.StringIO();w=csv.writer(text);w.writerow(('created_epoch_s','target_epoch_s','horizon_s','model_version','prediction_c','actual_c','hold_baseline_c','linear_baseline_c','model_snapshot_json'))
-                    for row in db.execute('SELECT created,target,horizon,version,predicted,actual,baseline,linear,model_snapshot FROM forecasts ORDER BY created,horizon'):w.writerow(tuple(row))
-                return self.reply(text.getvalue().encode(),mime='text/csv; charset=utf-8')
+                    def rows():
+                        yield ('created_epoch_s','target_epoch_s','horizon_s','model_version','prediction_c','actual_c','hold_baseline_c','linear_baseline_c','model_snapshot_json')
+                        for row in db.execute('SELECT created,target,horizon,version,predicted,actual,baseline,linear,model_snapshot FROM forecasts ORDER BY created,horizon'):
+                            yield tuple(row)
+                    return self.reply_csv(rows())
             if path=='/api/export':
                 run_id=int(q.get('run',['0'])[0])
                 with self.scope.store.connect() as db:
                     run=db.execute('SELECT * FROM runs WHERE id=?',(run_id,)).fetchone()
                     if not run: return self.reply({'error':'Recording not found'},404)
-                    rows=db.execute('SELECT t,raw,temperature,d1,d2 FROM samples WHERE t BETWEEN ? AND ? ORDER BY t',(run['start'],run['end'] or time.time()))
-                    text=io.StringIO();w=csv.writer(text);w.writerow(('timestamp_utc','elapsed_s','raw_c','temperature_c','d1_c_per_s','d2_c_per_s2','events'))
-                    events=[e for e in self.scope.store.events(run['start'],run['end'] or time.time()) if e['run_id']==run_id];ei=0
-                    for r in rows:
-                        labels=[]
-                        while ei<len(events) and events[ei]['t']<=r['t']: labels.append(events[ei]['label']);ei+=1
-                        w.writerow((datetime.fromtimestamp(r['t'],timezone.utc).isoformat(),round(r['t']-run['start'],3),*list(r)[1:],' | '.join(labels)))
-                    # Preserve events after the last sample, including DROP during a disconnect.
-                    for e in events[ei:]:w.writerow((datetime.fromtimestamp(e['t'],timezone.utc).isoformat(),round(e['t']-run['start'],3),'','','','',e['label']))
-                return self.reply(text.getvalue().encode(),mime='text/csv; charset=utf-8')
+                    samples=db.execute('SELECT t,raw,temperature,d1,d2 FROM samples WHERE t BETWEEN ? AND ? ORDER BY t',(run['start'],run['end'] or time.time()))
+                    events=[e for e in self.scope.store.events(run['start'],run['end'] or time.time()) if e['run_id']==run_id]
+                    def rows():
+                        yield ('timestamp_utc','elapsed_s','raw_c','temperature_c','d1_c_per_s','d2_c_per_s2','events')
+                        ei=0
+                        for r in samples:
+                            labels=[]
+                            while ei<len(events) and events[ei]['t']<=r['t']: labels.append(events[ei]['label']);ei+=1
+                            yield (datetime.fromtimestamp(r['t'],timezone.utc).isoformat(),round(r['t']-run['start'],3),*list(r)[1:],csv_text(' | '.join(labels)))
+                        # Preserve events after the last sample, including DROP during a disconnect.
+                        for e in events[ei:]:
+                            yield (datetime.fromtimestamp(e['t'],timezone.utc).isoformat(),round(e['t']-run['start'],3),'','','','',csv_text(e['label']))
+                    return self.reply_csv(rows())
             if path=='/api/stream':
                 sub=queue.Queue(maxsize=64)
                 with self.scope.lock:self.scope.subscribers.add(sub)
@@ -362,7 +408,7 @@ class Handler(BaseHTTPRequestHandler):
                     with self.scope.lock:self.scope.subscribers.discard(sub)
                 self.close_connection=True
                 return
-            assets={'/recording.js':('recording.js','text/javascript; charset=utf-8'),'/':('index.html','text/html; charset=utf-8'),'/plot-scale.js':('plot-scale.js','text/javascript; charset=utf-8'),'/app.js':('app.js','text/javascript; charset=utf-8'),'/style.css':('style.css','text/css; charset=utf-8')}
+            assets={'/theme.js':('theme.js','text/javascript; charset=utf-8'),'/recording.js':('recording.js','text/javascript; charset=utf-8'),'/':('index.html','text/html; charset=utf-8'),'/plot-scale.js':('plot-scale.js','text/javascript; charset=utf-8'),'/app.js':('app.js','text/javascript; charset=utf-8'),'/style.css':('style.css','text/css; charset=utf-8')}
             if path in assets:
                 name,mime=assets[path];return self.reply((ROOT/'static'/name).read_bytes(),mime=mime)
             self.reply({'error':'Not found'},404)

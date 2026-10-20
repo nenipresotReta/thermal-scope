@@ -1,6 +1,7 @@
 'use strict';
 const $=id=>document.getElementById(id), canvas=$('plot'), ctx=canvas.getContext('2d');
-let points=[], events=[], runs=[], active=null, viewed=null, latest=null, status={}, live=true, end=Date.now()/1000, span=600, hover=null, drag=null, historyToken=0, reconnect=false, receivedAt=0, total=0, rateStart=Date.now(), measuredRate=0, lastRecordRefresh=0, prediction={valid:false,reason:"LEARNING"}, minuteUnits=localStorage.getItem("derivativeUnits")==="min", calibrations=[], plotRange={min:0,max:250};
+const timelineClock=createServerClock(),serverNow=()=>timelineClock.now();
+let points=[], events=[], runs=[], active=null, viewed=null, latest=null, status={}, live=true, end=serverNow(), span=600, hover=null, drag=null, historyToken=0, recordsRevision=0, statusRevision=0, snapshotToken=0, receivedAt=0, total=0, rateStart=Date.now(), measuredRate=0, lastRecordRefresh=0, prediction={valid:false,reason:"LEARNING"}, minuteUnits=localStorage.getItem("derivativeUnits")==="min", calibrations=[], plotRange={min:0,max:250};
 const nice=v=>v===0?'0':Math.abs(v)<1?v.toFixed(2):Math.abs(v)<10?v.toFixed(1):v.toFixed(0);
 const clock=s=>{s=Math.max(0,Math.floor(s));return (s>=3600?Math.floor(s/3600)+':':'')+String(Math.floor(s/60)%60).padStart(2,'0')+':'+String(s%60).padStart(2,'0');};
 const futureSpace=()=>Math.min(prediction.horizon_s||300,span*.5);
@@ -8,9 +9,10 @@ const num=(v,n)=>Number.isFinite(v)?v.toFixed(n):'—';
 function toast(message){$('toast').textContent=message;$('toast').hidden=false;clearTimeout(toast.timer);toast.timer=setTimeout(()=>$('toast').hidden=true,4500);}
 async function api(path,options){const response=await fetch(path,options);const data=await response.json();if(!response.ok)throw Error(data.error||'Request failed');return data;}
 async function action(action,extra={}){try{const result=await api('/api/action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,...extra})});records(result);return true;}catch(e){toast(e.message);return false;}}
-function fitRecording(run){const range=recordingWindow(run,Date.now()/1000);span=range.span;end=range.end;}
-function syncLiveWindow(){if(active&&live&&!viewed)fitRecording(active);else if(live&&!viewed)end=(latest?.t||Date.now()/1000)+futureSpace();}
+function fitRecording(run){const range=recordingWindow(run,serverNow());span=range.span;end=range.end;}
+function syncLiveWindow(){if(active&&live&&!viewed)fitRecording(active);else if(live&&!viewed)end=(latest?.t||serverNow())+futureSpace();}
 function records(data){
+ recordsRevision++;
  const previous=active;runs=data.runs;events=data.events;active=runs.find(r=>r.end===null)||null;
  if(viewed)viewed=runs.find(r=>r.id===viewed.id)||viewed;
  if(previous&&!active){viewed=runs.find(r=>r.id===previous.id)||previous;live=false;fitRecording(viewed);history();if(viewed.drop_source==='auto')toast('DROP confirmed · marked retrospectively. Undo is available in Archive.');}
@@ -28,34 +30,56 @@ function updateRecords(){
  if(run)$('autoDrop').checked=!!run.auto_drop;
  $('autoDrop').disabled=!!viewed;
  const pending=active?.auto_drop&&status.drop_detection&&!viewed?status.drop_detection:null;
- $('autoDropNote').textContent=mode!=='coffee'?'Manual events only · no automatic detection':pending?(pending.confirm_at>Date.now()/1000?'DROP CANDIDATE · verifying '+Math.ceil(pending.confirm_at-Date.now()/1000)+' s':'DROP CANDIDATE · awaiting sustained cooling'):run&&!run.auto_drop?'AUTO DROP OFF':run?.drop_source==='auto'?'DROP CONFIRMED · RETROSPECTIVE':run?.end?'RECORDING COMPLETE':'Sustained cooling · 20 s confirmation';
+ $('autoDropNote').textContent=mode!=='coffee'?'Manual events only · no automatic detection':pending?(pending.confirm_at>serverNow()?'DROP CANDIDATE · verifying '+Math.ceil(pending.confirm_at-serverNow())+' s':'DROP CANDIDATE · awaiting sustained cooling'):run&&!run.auto_drop?'AUTO DROP OFF':run?.drop_source==='auto'?'DROP CONFIRMED · RETROSPECTIVE':run?.end?'RECORDING COMPLETE':'Sustained cooling · 20 s confirmation';
  $('dismissDrop').hidden=!pending;
  const list=run?events.filter(e=>e.run_id===run.id):[];
  $('events').replaceChildren();
  if(!list.length){const node=document.createElement('span');node.className='muted';node.textContent=run?'No events marked.':'Start a recording to mark events.';$('events').append(node);}
  list.forEach(e=>{const node=document.createElement('span');node.className='event-chip';const t=document.createElement('b');t.textContent=clock(e.t-run.start);node.append(t,document.createTextNode(e.label+(e.source==='auto'?' · AUTO':'')+' / '+num(e.temperature,1)+'°'));$('events').append(node);});
- const development=developmentMetrics(run,Date.now()/1000);
+ const development=developmentMetrics(run,serverNow());
  $('development').textContent=development?clock(development.seconds):'—';
  $('developmentRatio').textContent=development?development.percent.toFixed(1)+'%'+(development.live?' · LIVE':' · FINAL'):'WAITING FOR FC START';
  $('weightLoss').textContent=run?.weight_loss_pct!==null&&run?.weight_loss_pct!==undefined?run.weight_loss_pct.toFixed(2)+'%':'—';
  $('weightButton').hidden=!(run?.end&&mode==='coffee');$('weightButton').textContent=run?.green_weight_g?'EDIT WEIGHTS':'ADD WEIGHTS';
  $('modeNote').textContent=mode==='coffee'?'Coffee · development ratio uses recording start':'General · manual events only';
- $('timer').textContent=run?clock((run.end||Date.now()/1000)-run.start):'00:00';
+ $('timer').textContent=run?clock((run.end||serverNow())-run.start):'00:00';
  $('source').textContent=viewed?'ARCHIVED INPUT':'LIVE INPUT';
  syncLiveWindow();$('timeDiv').disabled=!!active&&live&&!viewed;
 }
 async function history(targetEnd=end){
- const token=++historyToken;
+ const token=++historyToken,revision=recordsRevision;
  try{const start=targetEnd-Math.max(span*2,600);const result=await api('/api/history?start='+start+'&end='+(targetEnd+.1));if(token!==historyToken)return;
+  // A mark or undo received while loading must not be replaced by an older response.
+  if(revision!==recordsRevision)return history(targetEnd);
   // SSE may arrive during the request: retain newer samples without duplicating timestamps.
   const lastSaved=result.samples.at(-1)?.t||start;const tail=points.filter(p=>p.t>lastSaved&&p.t>=start);points=[...result.samples,...tail];
   const ids=new Set(result.events.map(e=>e.id));events=[...result.events,...events.filter(e=>!ids.has(e.id)&&e.t>targetEnd+.1)];updateRecords();
  }catch(e){toast('History: '+e.message);}
 }
+function applyStatus(next){
+ timelineClock.sync(next.now);
+ statusRevision++;
+ const oldHost=status.host;status=next;
+ if(oldHost!==undefined&&oldHost!==status.host){latest=null;points=[];measuredRate=0;total=0;rateStart=Date.now();historyToken++;}
+ prediction=status.prediction||prediction;
+ if(status.latest&&(!latest||status.latest.t>latest.t))latest=status.latest;
+ refreshReading();
+}
+async function restoreStreamSnapshot(){
+ const token=++snapshotToken,recordVersion=recordsRevision,statusVersion=statusRevision;
+ try{
+  const [s,r,e]=await Promise.all([api('/api/status'),api('/api/runs'),api('/api/events')]);
+  if(token!==snapshotToken)return;
+  // Live messages take precedence over HTTP snapshots that started before them.
+  if(statusVersion===statusRevision)applyStatus(s);
+  if(recordVersion===recordsRevision)records({runs:r,events:e});
+  syncLiveWindow();await history();
+ }catch(e){if(token===snapshotToken)toast('Reconnect: '+e.message);}
+}
 function refreshReading(){
- const stale=!latest||!status.connected||Date.now()/1000-latest.t>2;
+ const stale=!latest||!status.connected||serverNow()-latest.t>2;
  document.body.classList.toggle('stale',stale&&!viewed);
- const reading=viewed?(points.filter(p=>p.t>=viewed.start&&p.t<=viewed.end).at(-1)||null):latest;
+ const reading=viewed?(points.filter(p=>p.t>=viewed.start&&p.t<=(viewed.end??Infinity)).at(-1)||null):latest;
  $('temp').textContent=num(reading?.temperature,1);$('raw').textContent='RAW '+num(reading?.raw,2)+' °C';$('d1').textContent=num(reading?.d1*(minuteUnits?60:1),minuteUnits?2:3);$('d2').textContent=num(reading?.d2*(minuteUnits?3600:1),minuteUnits?2:4);
  $('d1Unit').textContent=minuteUnits?'°C/min':'°C/s';$('d2Unit').textContent=minuteUnits?'°C/min²':'°C/s²';$('derivativeUnits').textContent=minuteUnits?'/min ⇄ /s':'/s ⇄ /min';
  $('direction').textContent=!reading?'WAITING FOR SENSOR':Math.abs(reading.d1)<.003?'→ STEADY':reading.d1>0?'↗ RISING':'↘ FALLING';
@@ -69,32 +93,33 @@ function refreshReading(){
 }
 function startStream(){
  const stream=new EventSource('/api/stream');
- stream.addEventListener('status',e=>{const oldHost=status.host;status=JSON.parse(e.data);if(oldHost&&oldHost!==status.host){latest=null;points=[];measuredRate=0;}prediction=status.prediction||prediction;if(status.latest&&!latest)latest=status.latest;refreshReading();});
+ // Restore recording state on every connection, even while the probe is offline.
+ stream.addEventListener('open',restoreStreamSnapshot);
+ stream.addEventListener('status',e=>applyStatus(JSON.parse(e.data)));
  stream.addEventListener('sample',e=>{const p=JSON.parse(e.data);if(latest&&p.t<latest.t)return;latest=p;status.connected=true;status.message='Live';points.push(p);total++;receivedAt=Date.now();
   if(points.length>220000)points.splice(0,points.length-216000);
   if(Date.now()-rateStart>=5000){measuredRate=total/((Date.now()-rateStart)/1000);total=0;rateStart=Date.now();}
   syncLiveWindow();
-  if(reconnect){reconnect=false;history();}
  });
  stream.addEventListener('learning',e=>showLearning(JSON.parse(e.data)));
  stream.addEventListener('prediction',e=>{prediction=JSON.parse(e.data);});
  stream.addEventListener('calibration',e=>{calibrations=JSON.parse(e.data);showCalibration();});
  stream.addEventListener('records',e=>records(JSON.parse(e.data)));
  stream.addEventListener('drop_detection',e=>{status.drop_detection=JSON.parse(e.data);updateRecords();});
- stream.onerror=()=>{status.connected=false;status.message='Server connection lost';reconnect=true;refreshReading();};
+ stream.onerror=()=>{snapshotToken++;statusRevision++;status.connected=false;status.message='Server connection lost';refreshReading();};
 }
 function ask(title,initial){return new Promise(resolve=>{const dialog=$('inputDialog');$('inputTitle').textContent=title;$('inputText').value=initial;dialog.returnValue='';dialog.onclose=()=>resolve(dialog.returnValue==='ok'?$('inputText').value.trim():null);dialog.showModal();$('inputText').focus();$('inputText').select();});}
 $('derivativeUnits').onclick=()=>{minuteUnits=!minuteUnits;localStorage.setItem('derivativeUnits',minuteUnits?'min':'s');refreshReading();};
-$('start').onclick=async()=>{const mode=$('recordingMode').value;const name=await ask(mode==='coffee'?'New coffee recording':'New general recording',(mode==='coffee'?'Roast ':'Session ')+new Date().toLocaleString('en-GB',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}));if(name)await action('start',{name,mode,auto_drop:$('autoDrop').checked});};
+$('start').onclick=async()=>{const mode=$('recordingMode').value;const name=await ask(mode==='coffee'?'New coffee recording':'New general recording',(mode==='coffee'?'Roast ':'Session ')+new Date(serverNow()*1000).toLocaleString('en-GB',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}));if(name)await action('start',{name,mode,auto_drop:$('autoDrop').checked});};
 $('recordingMode').onchange=updateRecords;
 $('autoDrop').onchange=()=>{if(active)action('auto_drop',{enabled:$('autoDrop').checked});};
 $('dismissDrop').onclick=()=>action('auto_drop',{enabled:false});
 $('stop').onclick=()=>action('stop');document.querySelectorAll('[data-event]').forEach(b=>b.onclick=()=>action('event',{label:b.dataset.event}));
 $('customEvent').onclick=async()=>{const label=await ask('Mark an event','');if(label)await action('event',{label});};$('undo').onclick=()=>action('undo');
-$('hold').onclick=()=>{if(viewed){viewed=null;live=true;history(Date.now()/1000);}else live=!live;refreshReading();};
+$('hold').onclick=()=>{if(viewed){viewed=null;live=true;history(serverNow());}else live=!live;refreshReading();};
 function goLive(){viewed=null;live=true;syncLiveWindow();history();updateRecords();refreshReading();}
 $('live').onclick=goLive;$('backLive').onclick=()=>{$('archive').close();goLive();};
-$('timeDiv').onchange=()=>{span=Number($('timeDiv').value)*10;if(live)end=(latest?.t||Date.now()/1000)+futureSpace();history();refreshReading();};
+$('timeDiv').onchange=()=>{span=Number($('timeDiv').value)*10;if(live)end=(latest?.t||serverNow())+futureSpace();history();refreshReading();};
 $('tempDiv').onchange=()=>{$('offset').disabled=true;};$('offset').disabled=true;
 async function showArchive(){
  try{
@@ -103,8 +128,8 @@ async function showArchive(){
   runs.forEach(run=>{
    const row=document.createElement('div');row.className='run';const text=document.createElement('div'),name=document.createElement('strong'),info=document.createElement('small');
    name.textContent=run.name;
-   let description=new Date(run.start*1000).toLocaleString('en-GB')+' · '+(run.mode==='general'?'GENERAL':'COFFEE')+' · '+clock((run.end||Date.now()/1000)-run.start)+(run.end?'':' · REC');
-   const dev=developmentMetrics(run,Date.now()/1000);if(dev)description+=' · DEV '+clock(dev.seconds)+' / '+dev.percent.toFixed(1)+'%';
+   let description=new Date(run.start*1000).toLocaleString('en-GB')+' · '+(run.mode==='general'?'GENERAL':'COFFEE')+' · '+clock((run.end||serverNow())-run.start)+(run.end?'':' · REC');
+   const dev=developmentMetrics(run,serverNow());if(dev)description+=' · DEV '+clock(dev.seconds)+' / '+dev.percent.toFixed(1)+'%';
    if(run.weight_loss_pct!==null)description+=' · LOSS '+run.weight_loss_pct.toFixed(2)+'%';
    if(run.drop_source==='auto')description+=' · AUTO DROP';
    info.textContent=description;text.append(name,info);
@@ -127,6 +152,10 @@ async function saveWeights(clear=false){
 $('weightButton').onclick=()=>openWeights(viewed||active);
 $('closeWeights').onclick=()=>$('weightDialog').close();$('weightForm').onsubmit=e=>{e.preventDefault();saveWeights();};$('clearWeights').onclick=()=>saveWeights(true);$('greenWeight').oninput=previewWeights;$('roastedWeight').oninput=previewWeights;
 $('closeArchive').onclick=()=>$('archive').close();
+let plotColors;
+function updatePlotColors(){const style=getComputedStyle(document.documentElement);plotColors=Object.fromEntries(["grid","grid-strong","grid-horizontal","axis","axis-text","tick","trace","event-line","event-fill","event-ink","future","guide","forecast-fill","crosshair"].map(key=>[key,style.getPropertyValue("--"+key).trim()]));}
+updatePlotColors();
+window.addEventListener("themechange",updatePlotColors);
 function render(){
  const rect=canvas.getBoundingClientRect(),dpr=devicePixelRatio||1,w=rect.width,h=rect.height;
  if(canvas.width!==Math.round(w*dpr)||canvas.height!==Math.round(h*dpr)){canvas.width=Math.round(w*dpr);canvas.height=Math.round(h*dpr);}
@@ -144,33 +173,33 @@ function render(){
  ctx.font='10px monospace';ctx.lineWidth=1;ctx.textBaseline='middle';
  const axisRun=viewed||active;
  const ticks=axisRun?recordingTicks(start,end,axisRun.start):Array.from({length:11},(_,i)=>start+i*span/10);
- ticks.forEach((t,i)=>{const xx=x(t);ctx.strokeStyle=i===0?'#bbbdb2':'#e0e0d6';ctx.beginPath();ctx.moveTo(xx,top);ctx.lineTo(xx,h-bottom);ctx.stroke();ctx.fillStyle='#7d8175';ctx.textAlign='center';if(axisRun||i%2===0){const label=axisRun?(t<axisRun.start?'−':'')+clock(Math.abs(t-axisRun.start)):new Date(t*1000).toLocaleTimeString('en-GB',{hour12:false});ctx.fillText(label,xx,h-14);}});
+ ticks.forEach((t,i)=>{const xx=x(t);ctx.strokeStyle=i===0?plotColors["grid-strong"]:plotColors["grid"];ctx.beginPath();ctx.moveTo(xx,top);ctx.lineTo(xx,h-bottom);ctx.stroke();ctx.fillStyle=plotColors["tick"];ctx.textAlign='center';if(axisRun||i%2===0){const label=axisRun?(t<axisRun.start?'−':'')+clock(Math.abs(t-axisRun.start)):new Date(t*1000).toLocaleTimeString('en-GB',{hour12:false});ctx.fillText(label,xx,h-14);}});
 
- for(let i=0;i<=5;i++){const yy=top+i*ph/5;ctx.strokeStyle='#d9dbd0';ctx.beginPath();ctx.moveTo(left,yy);ctx.lineTo(w-right,yy);ctx.stroke();ctx.fillStyle='#7d8175';ctx.textAlign='right';ctx.fillText((max-i*(max-min)/5).toFixed(Math.max(0,-Math.floor(Math.log10((max-min)/5)))),left-10,yy);}
- ctx.strokeStyle='#999d91';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(left,top);ctx.lineTo(left,h-bottom);ctx.lineTo(w-right,h-bottom);ctx.stroke();ctx.fillStyle='#70776a';ctx.font='10px monospace';ctx.textAlign='right';ctx.fillText('°C',left-10,top-12);ctx.textAlign='left';
+ for(let i=0;i<=5;i++){const yy=top+i*ph/5;ctx.strokeStyle=plotColors["grid-horizontal"];ctx.beginPath();ctx.moveTo(left,yy);ctx.lineTo(w-right,yy);ctx.stroke();ctx.fillStyle=plotColors["tick"];ctx.textAlign='right';ctx.fillText((max-i*(max-min)/5).toFixed(Math.max(0,-Math.floor(Math.log10((max-min)/5)))),left-10,yy);}
+ ctx.strokeStyle=plotColors["axis"];ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(left,top);ctx.lineTo(left,h-bottom);ctx.lineTo(w-right,h-bottom);ctx.stroke();ctx.fillStyle=plotColors["axis-text"];ctx.font='10px monospace';ctx.textAlign='right';ctx.fillText('°C',left-10,top-12);ctx.textAlign='left';
  for(let i=0;i<=50;i++){const xx=left+i*pw/50,yy=top+i*ph/50;ctx.beginPath();ctx.moveTo(xx,h-bottom);ctx.lineTo(xx,h-bottom-(i%5===0?7:3));ctx.moveTo(left,yy);ctx.lineTo(left+(i%10===0?7:3),yy);ctx.stroke();}
  ctx.save();ctx.beginPath();ctx.rect(left,top,pw,ph);ctx.clip();
- ctx.strokeStyle='#c44d31';ctx.lineWidth=2;ctx.beginPath();let previous=null;
+ ctx.strokeStyle=plotColors["trace"];ctx.lineWidth=2;ctx.beginPath();let previous=null;
  for(const p of visible){if(previous&&p.t-previous.t<Math.max(2,p.high!==undefined&&previous.high!==undefined?span/9000*2.5:2))ctx.lineTo(x(p.t),y(p.temperature));else ctx.moveTo(x(p.t),y(p.temperature));previous=p;}ctx.stroke();
  // On wide views, show bucket min/max as a thin envelope, retaining short peaks.
  ctx.globalAlpha=.25;ctx.lineWidth=1;ctx.beginPath();for(const p of visible){if(p.high>p.low){ctx.moveTo(x(p.t),y(p.low));ctx.lineTo(x(p.t),y(p.high));}}ctx.stroke();ctx.globalAlpha=1;
  const run=viewed||active;
  const inWindow=events.filter(e=>e.t>=start&&e.t<=end&&(!run||e.run_id===run.id));
- inWindow.forEach((e,i)=>{const xx=x(e.t);const ey=y(e.temperature??min),ly=Math.max(top+18,Math.min(h-bottom-25,ey-25-(i%3)*18));ctx.strokeStyle='#999b90';ctx.lineWidth=.8;ctx.beginPath();ctx.moveTo(xx,ey);ctx.lineTo(xx+12,ly);ctx.stroke();ctx.font='10px monospace';const tw=ctx.measureText(e.label).width;ctx.fillStyle='#f8f6f0e8';ctx.fillRect(xx+13,ly-8,tw+8,16);ctx.fillStyle='#4e5348';ctx.textAlign='left';ctx.fillText(e.label,xx+17,ly);});
+ inWindow.forEach((e,i)=>{const xx=x(e.t);const ey=y(e.temperature??min),ly=Math.max(top+18,Math.min(h-bottom-25,ey-25-(i%3)*18));ctx.strokeStyle=plotColors["event-line"];ctx.lineWidth=.8;ctx.beginPath();ctx.moveTo(xx,ey);ctx.lineTo(xx+12,ly);ctx.stroke();ctx.font='10px monospace';const tw=ctx.measureText(e.label).width;ctx.fillStyle=plotColors["event-fill"];ctx.fillRect(xx+13,ly-8,tw+8,16);ctx.fillStyle=plotColors["event-ink"];ctx.textAlign='left';ctx.fillText(e.label,xx+17,ly);});
  const last=visible.at(-1);
  if(last){
   const xx=x(last.t),yy=y(last.temperature);
   // A quiet live time guide; measured and future regions remain distinct.
-  if(live&&!viewed){ctx.fillStyle='#e2e0d62a';ctx.fillRect(xx,top,w-right-xx,ph);ctx.strokeStyle='#b6b9ad';ctx.setLineDash([2,5]);ctx.beginPath();ctx.moveTo(xx,top);ctx.lineTo(xx,h-bottom);ctx.stroke();ctx.setLineDash([]);}
-  ctx.fillStyle='#c44d31';ctx.beginPath();ctx.arc(xx,yy,2.5,0,Math.PI*2);ctx.fill();
-  if($('prediction').checked&&prediction.valid&&live&&!viewed&&Date.now()/1000-last.t<2){
+  if(live&&!viewed){ctx.fillStyle=plotColors["future"];ctx.fillRect(xx,top,w-right-xx,ph);ctx.strokeStyle=plotColors["guide"];ctx.setLineDash([2,5]);ctx.beginPath();ctx.moveTo(xx,top);ctx.lineTo(xx,h-bottom);ctx.stroke();ctx.setLineDash([]);}
+  ctx.fillStyle=plotColors["trace"];ctx.beginPath();ctx.arc(xx,yy,2.5,0,Math.PI*2);ctx.fill();
+  if($('prediction').checked&&prediction.valid&&live&&!viewed&&serverNow()-last.t<2){
    const pp=prediction.points;
-   ctx.fillStyle='#c44d3112';ctx.beginPath();pp.forEach((p,i)=>i?ctx.lineTo(x(p.t),y(p.low)):ctx.moveTo(x(p.t),y(p.low)));[...pp].reverse().forEach(p=>ctx.lineTo(x(p.t),y(p.high)));ctx.closePath();ctx.fill();
-   ctx.strokeStyle='#c44d31';ctx.globalAlpha=.55;ctx.setLineDash([6,5]);ctx.lineWidth=2;ctx.beginPath();pp.forEach((p,i)=>i?ctx.lineTo(x(p.t),y(p.temperature)):ctx.moveTo(x(p.t),y(p.temperature)));ctx.stroke();ctx.setLineDash([]);ctx.globalAlpha=1;
+   ctx.fillStyle=plotColors["forecast-fill"];ctx.beginPath();pp.forEach((p,i)=>i?ctx.lineTo(x(p.t),y(p.low)):ctx.moveTo(x(p.t),y(p.low)));[...pp].reverse().forEach(p=>ctx.lineTo(x(p.t),y(p.high)));ctx.closePath();ctx.fill();
+   ctx.strokeStyle=plotColors["trace"];ctx.globalAlpha=.55;ctx.setLineDash([6,5]);ctx.lineWidth=2;ctx.beginPath();pp.forEach((p,i)=>i?ctx.lineTo(x(p.t),y(p.temperature)):ctx.moveTo(x(p.t),y(p.temperature)));ctx.stroke();ctx.setLineDash([]);ctx.globalAlpha=1;
   }
  }
  if(hover&&!drag){const t=start+(hover.x-left)/pw*span;let found=null,d=Infinity;for(const p of visible){if(Math.abs(p.t-t)<d){found=p;d=Math.abs(p.t-t);}}
-  if(found&&hover.x>=left&&hover.x<=w-right){ctx.strokeStyle='#9b9f94';ctx.setLineDash([2,4]);ctx.beginPath();ctx.moveTo(x(found.t),top);ctx.lineTo(x(found.t),h-bottom);ctx.stroke();ctx.setLineDash([]);$('tooltip').hidden=false;$('tooltip').textContent=new Date(found.t*1000).toLocaleTimeString('en-GB')+' / '+num(found.temperature,2)+' °C';$('tooltip').style.left=Math.min(w-225,Math.max(60,hover.x+12))+'px';}else $('tooltip').hidden=true;
+  if(found&&hover.x>=left&&hover.x<=w-right){ctx.strokeStyle=plotColors["crosshair"];ctx.setLineDash([2,4]);ctx.beginPath();ctx.moveTo(x(found.t),top);ctx.lineTo(x(found.t),h-bottom);ctx.stroke();ctx.setLineDash([]);$('tooltip').hidden=false;$('tooltip').textContent=new Date(found.t*1000).toLocaleTimeString('en-GB')+' / '+num(found.temperature,2)+' °C';$('tooltip').style.left=Math.min(w-225,Math.max(60,hover.x+12))+'px';}else $('tooltip').hidden=true;
  }else $('tooltip').hidden=true;
  ctx.restore();
 }
@@ -194,12 +223,12 @@ canvas.addEventListener('wheel',e=>{
  refreshReading();
 },{passive:false});
 let lastFrame=0;function frame(now){if(now-lastFrame>32){render();lastFrame=now;}requestAnimationFrame(frame);}requestAnimationFrame(frame);
-setInterval(()=>{refreshReading();updateRecords();if(Date.now()-lastRecordRefresh>10000){lastRecordRefresh=Date.now();api('/api/status').then(s=>status=s).catch(()=>{});}},500);
-(async()=>{try{const [s,r,e]=await Promise.all([api('/api/status'),api('/api/runs'),api('/api/events')]);status=s;latest=s.latest;records({runs:r,events:e});syncLiveWindow();await history();}catch(e){toast(e.message);}startStream();})();
+setInterval(()=>{refreshReading();updateRecords();if(Date.now()-lastRecordRefresh>10000){lastRecordRefresh=Date.now();const revision=statusRevision;api('/api/status').then(s=>{if(revision===statusRevision)applyStatus(s);}).catch(()=>{});}},500);
+startStream();
 
 function showCalibration(){
  const running=calibrations.find(c=>!c.end);$('calibrationStart').disabled=!!running;$('calibrationMedium').disabled=!!running;$('calibrationFinish').disabled=!running;$('calibrationCancel').disabled=!running;
- $('calibrationStatus').textContent=running?running.medium+' STEP · '+clock(Date.now()/1000-running.start)+' · Finish after settling.':'No calibration running.';
+ $('calibrationStatus').textContent=running?running.medium+' STEP · '+clock(serverNow()-running.start)+' · Finish after settling.':'No calibration running.';
  $('calibrationResults').replaceChildren();
  calibrations.filter(c=>c.result?.valid).forEach(c=>{const row=document.createElement('div');row.className='calibration-result';row.textContent=c.medium+' / τ '+c.result.tau_s+' s / RMSE '+c.result.rmse_c+' °C / '+new Date(c.start*1000).toLocaleString('en-GB');$('calibrationResults').append(row);});
 }

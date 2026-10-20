@@ -1,4 +1,17 @@
 // Recording coordinates and derived metrics share seconds as their time unit.
+// Server timestamps govern the timeline. Advance an accepted server timestamp
+// with a monotonic clock so client wall-clock skew and later clock corrections
+// cannot alter freshness, recording duration, or development ratios.
+function createServerClock(wallNow=()=>Date.now()/1000,monotonicNow=()=>performance.now()/1000){
+ let epoch=wallNow(),at=monotonicNow();
+ return {
+  now(){return epoch+Math.max(0,monotonicNow()-at);},
+  sync(serverTime){
+   if(!Number.isFinite(serverTime))return;
+   epoch=serverTime;at=monotonicNow();
+  }
+ };
+}
 function recordingWindow(run,now){
  const finished=run.end!==null&&run.end!==undefined;
  const duration=Math.max(0,(finished?run.end:now)-run.start);
@@ -19,4 +32,4 @@ function recordingTicks(start,end,zero){
  for(let i=Math.ceil((start-zero)/step);zero+i*step<=end+.001;i++)result.push(zero+i*step);
  return result;
 }
-if(typeof module!=='undefined')module.exports={recordingWindow,developmentMetrics,recordingTicks};
+if(typeof module!=='undefined')module.exports={createServerClock,recordingWindow,developmentMetrics,recordingTicks};

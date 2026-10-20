@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Audit only Git-tracked application source. Never print matched secret values."""
+"""Audit the staged source snapshot. Never print matched secret values."""
 import pathlib,re,subprocess,sys
 ROOT=pathlib.Path(__file__).resolve().parents[1]
 DENIED_SUFFIXES={'.bin','.elf','.hex','.uf2','.sqlite','.sqlite3','.db','.csv','.log','.png','.jpg','.jpeg','.zip','.pyc'}
@@ -16,7 +16,7 @@ def main():
   path=pathlib.PurePosixPath(name)
   if path.suffix.lower() in DENIED_SUFFIXES or any(p in DENIED_DIRS or p.startswith('build-') for p in path.parts) or 'wifi_credentials' in name.lower() or path.name.startswith('.env') and path.name!='.env.example':
    errors.append(name+': excluded runtime/firmware artifact');continue
-  raw=(ROOT/name).read_bytes();checked+=1
+  raw=subprocess.check_output(['git','show',':'+name],cwd=ROOT);checked+=1
   if b'\0' in raw:errors.append(name+': binary content is not allowed');continue
   try:text=raw.decode('utf-8')
   except UnicodeDecodeError:errors.append(name+': non-text content is not allowed');continue

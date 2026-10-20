@@ -2,7 +2,7 @@
 
 A local-first PT100 temperature instrument for a home server, NAS or desktop. One collector reads a compatible ESP32 thermometer over Wi-Fi; phones, tablets and computers share a live browser view. No cloud account, frontend build or Python packages are required.
 
-**First version: v0.1.0.** This repository contains the web application only. **Device firmware, compiled firmware, Wi-Fi credentials and personal measurement data are intentionally not distributed.**
+**Release history:** see [CHANGELOG.md](CHANGELOG.md). This repository contains the web application only. **Device firmware, compiled firmware, Wi-Fi credentials and personal measurement data are intentionally not distributed.**
 
 ## Run locally
 
@@ -39,6 +39,10 @@ docker compose up -d --build
 The default web binding is loopback. On a trusted home server, set `WEB_BIND=0.0.0.0` in `.env`, then open `http://SERVER_IP:8080` from other LAN devices. `DEVICE_HOST` can remain empty: select the thermometer in the web UI. The named `scope-data` volume retains the device selection, SQLite history, events and prediction scores.
 
 The container runs as a non-root user. No USB mapping or firmware flashing is needed. The server must be able to reach the thermometer on TCP 502 and, for discovery, TCP 80. This version has no login or TLS termination; keep it on the intended home network.
+
+## Appearance
+
+Use **THEME** in the header to switch between **GitHub Dark** and the original **Paper** palette. GitHub Dark is the default; the selection is remembered in each browser and synchronized between its tabs. Chart grids, events, forecast shading and dialogs share the selected palette. Colors are inspired by [GitHub Primer](https://primer.style/product/primitives/color/) and match the companion thermometer display.
 
 ## Scope and recording
 
@@ -91,7 +95,7 @@ The device supplies derivative smoothing; the original target uses a roughly 10-
 
 ## Storage and limits
 
-SQLite WAL commits approximately once per second; abrupt power loss can lose the most recent uncommitted samples. Timestamps are server receipt times, not hardware acquisition timestamps. Browser reconnects backfill persisted history. There is no automatic retention/deletion policy yet, so monitor disk usage.
+SQLite WAL commits approximately once per second; abrupt power loss can lose the most recent uncommitted samples. Timestamps are server receipt times, not hardware acquisition timestamps. Browser reconnects restore shared recording state and backfill persisted history, even while the probe is offline. Live recording timers and freshness use server time advanced with a monotonic browser clock; a viewing device’s wall-clock setting does not change development ratios. There is no automatic retention/deletion policy yet, so monitor disk usage.
 
 Use one collector process per database. To back up a running local instance consistently:
 
@@ -99,21 +103,21 @@ Use one collector process per database. To back up a running local instance cons
 python3 -c "import sqlite3; a=sqlite3.connect('data/scope.sqlite3'); b=sqlite3.connect('backup.sqlite3'); a.backup(b); b.close(); a.close()"
 ```
 
-Stop the collector before moving a database to a Docker volume; the container data directory must be writable by UID/GID 10001. Do not copy only the main file of a live WAL database. Historical sessions are retained when the selected device changes; start a new recording when changing probes.
+Stop the collector before moving a database to a Docker volume; the container data directory must be writable by UID/GID 10001. Do not copy only the main file of a live WAL database. Historical sessions are retained when the selected device changes; start a new recording when changing probes. Forecasts are scored only against the device address that issued them. Earlier predictions with no recorded source remain preserved, but pending ones are not assigned to a new device. CSV exports stream in bounded chunks; user-entered event labels that could be spreadsheet formulas are escaped only in the export.
 
 ## Development and release checks
 
 ```sh
 python3 -m unittest discover -s tests -v
-node tests/plot-scale.test.js
-node --check static/app.js
+for test in tests/*.test.js; do node "$test"; done
+for file in static/*.js; do node --check "$file"; done
 python3 tools/check_release.py
 docker compose config -q
 ```
 
 Node is only needed for development checks, not runtime. Tests cover device detection, bounded discovery, persistence, failed selection, Modbus fragmentation/reconnection, events/CSV, physical-model numerical integration and forecast scoring. GitHub Actions runs tests, a tracked-source audit and a fresh-container onboarding smoke test.
 
-The release audit rejects tracked firmware, binaries, runtime databases, captures and detected credential patterns. `.gitignore` and `.dockerignore` exclude local runtime material. These safeguards supplement the explicit reviewed source-file list; they are not permission to add firmware or secrets.
+The release audit checks the staged snapshot and rejects tracked firmware, binaries, runtime databases, captures and detected credential patterns. `.gitignore` and `.dockerignore` exclude local runtime material. These safeguards supplement the explicit reviewed source-file list; they are not permission to add firmware or secrets.
 
 References: [Artisan chart behavior](https://github.com/artisan-roaster-scope/artisan/blob/master/src/artisanlib/canvas.py), [MIT lumped thermal analysis](https://web.mit.edu/16.unified/www/FALL/thermodynamics/notes/node129.html). The implementation is independent; no Artisan source is bundled.
 

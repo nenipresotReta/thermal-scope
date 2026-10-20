@@ -1,3 +1,16 @@
+# Changelog
+
+## Unreleased
+
+- GitHub Dark and Paper themes, with persistent per-browser selection and matching chart colors.
+- Recover shared recording state after browser reconnection, including when the probe is offline; prevent late HTTP snapshots from replacing newer events.
+- Keep collection alive after malformed Modbus exceptions, slow-viewer queue races and transient database write errors.
+- Serialize device changes with session starts and isolate future forecast scoring by device source.
+- Stream large CSV exports and keep custom event labels literal in spreadsheet programs.
+- Accept long continuous calibration sequences without confusing decimation with missing samples.
+- Use the server timeline for live timing and freshness even when a viewing device clock is wrong.
+- Review and expand regression coverage before release.
+
 ## v0.2.0
 
 - Coffee/general recording modes; general sessions never auto-end on cooling.
@@ -6,8 +19,6 @@
 - Optional persisted green/roasted weights and weight-loss calculation for completed coffee records.
 - Zero-based 16-minute recording view that expands to keep the complete session.
 - Backward-compatible database migration; historical events are not reinterpreted.
-
-# Changelog
 
 ## 0.1.0
 

@@ -8,9 +8,11 @@ from thermal_model import line
 def fit_step(rows):
     fail=lambda reason:{'valid':False,'reason':reason}
     if len(rows)<100:return fail('Need at least 10 seconds of data')
+    if rows[-1]['t']-rows[0]['t']<10:return fail('Need at least 10 seconds of data')
+    # Validate acquisition continuity before reducing long calibrations for fitting.
+    # Otherwise a continuous 10 Hz air step lasting 27.5 min is mistaken for a gap.
+    if any(b['t']-a['t']>1 for a,b in zip(rows,rows[1:])):return fail('Data gap: repeat the calibration')
     data=rows[::max(1,len(rows)//1500)]
-    if data[-1]['t']-data[0]['t']<10:return fail('Need at least 10 seconds of data')
-    if any(b['t']-a['t']>1 for a,b in zip(data,data[1:])):return fail('Data gap: repeat the calibration')
     base=sum(r['raw'] for r in data[:3])/3
     total=data[-1]['raw']-base
     if abs(total)<5:return fail('Need a step of at least 5 °C')
