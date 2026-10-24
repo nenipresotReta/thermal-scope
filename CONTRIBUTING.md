@@ -1,6 +1,8 @@
 # Contributing and publication readiness
 
-Thermal Scope is currently a private project being prepared for external use. Documentation improvements do not change repository visibility or grant a source license.
+[English](CONTRIBUTING.md) | [简体中文](CONTRIBUTING.zh-CN.md)
+
+Thermal Scope is currently a private project being prepared for external use. Project source is licensed under [MIT](LICENSE). Repository visibility is a separate owner decision.
 
 ## Before a change
 
@@ -10,7 +12,7 @@ Run the checks listed in the README before proposing a change. `tools/check_rele
 
 ## Before making the repository public
 
-- Choose a LICENSE and review third-party code/asset provenance and dependency notices. There is currently no LICENSE file; do not describe this project as permissively licensed or assume external reuse rights.
+- Review third-party code/asset provenance and dependency notices. Project MIT licensing does not replace dependency licenses or grant rights to third-party marks.
 - Review every branch/tag and reachable Git history, plus release notes/assets, issues, CI logs/artifacts and any screenshots. Current-tree checks alone are insufficient.
 - Exclude real network credentials, generated headers, compiled firmware, personal device identifiers, private paths, measurement records and diagnostic captures. Rotate exposed credentials if any were previously uploaded; deleting the latest file is insufficient.
 - Reproduce setup from a clean checkout with documented dependencies and placeholder configuration, then test on the stated hardware/network. Distinguish host tests, firmware builds and actual hardware tests.

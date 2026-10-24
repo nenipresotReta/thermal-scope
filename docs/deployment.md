@@ -1,5 +1,7 @@
 # Deployment and recovery
 
+[English](deployment.md) | [简体中文](deployment.zh-CN.md)
+
 Thermal Scope is the server/browser application; [Thermal Probe](https://github.com/nenipresotReta/thermal-probe) is the companion ESP32 firmware. Neither project needs the other's build tools. The server reads the thermometer; browsers read the server. A browser does not connect directly to the ESP32.
 
 ## Choose a deployment

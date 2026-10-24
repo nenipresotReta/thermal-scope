@@ -1,6 +1,10 @@
 # Changelog
 
+[English](CHANGELOG.md) | [简体中文](CHANGELOG.zh-CN.md)
+
 ## Unreleased
+
+- Provide bilingual English/Chinese README and guides; add MIT licensing and third-party notices.
 
 - Default derivative readouts to °C/min and °C/min² while preserving saved browser choices and second-based storage/protocol values.
 - Add interface/setup guidance, deployment recovery and publication-readiness documentation.

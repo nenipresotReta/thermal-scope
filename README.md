@@ -1,5 +1,7 @@
 # Thermal Scope
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 A local-first PT100 temperature instrument for a home server, NAS or desktop. One collector reads a compatible ESP32 thermometer over Wi-Fi; phones, tablets and computers share a live browser view. No cloud account, frontend build or Python packages are required.
 
 **Release history:** see [CHANGELOG.md](CHANGELOG.md). This repository contains the web application only. **Device firmware, compiled firmware, Wi-Fi credentials and personal measurement data are intentionally not distributed.**
@@ -142,3 +144,7 @@ A temperature probe alone cannot distinguish an actual DROP from a long accident
 For a completed coffee recording, Archive → **ADD WEIGHTS / EDIT WEIGHTS** stores green and roasted weights in grams. Weight loss is `(green − roasted) / green × 100%`; both values must be positive and roasted <= green. Values are optional, editable, clearable and persist with that recording. The CSV retains its existing seven-column sample format; weight metadata and development summaries are available in `/api/runs` and the Archive UI.
 
 Behavior references: [Artisan auto-DROP explanation](https://github.com/artisan-roaster-scope/artisan/discussions/1159), [official source](https://github.com/artisan-roaster-scope/artisan/blob/master/src/artisanlib/canvas.py). No Artisan source implementation is included in this project.
+
+## License
+
+[MIT](LICENSE). See [third-party notices](THIRD_PARTY_NOTICES.md) for dependencies and references.
