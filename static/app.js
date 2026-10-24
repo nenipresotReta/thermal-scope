@@ -1,7 +1,7 @@
 'use strict';
 const $=id=>document.getElementById(id), canvas=$('plot'), ctx=canvas.getContext('2d');
 const timelineClock=createServerClock(),serverNow=()=>timelineClock.now();
-let points=[], events=[], runs=[], active=null, viewed=null, latest=null, status={}, live=true, end=serverNow(), span=600, hover=null, drag=null, historyToken=0, recordsRevision=0, statusRevision=0, snapshotToken=0, receivedAt=0, total=0, rateStart=Date.now(), measuredRate=0, lastRecordRefresh=0, prediction={valid:false,reason:"LEARNING"}, minuteUnits=localStorage.getItem("derivativeUnits")==="min", calibrations=[], plotRange={min:0,max:250};
+let points=[], events=[], runs=[], active=null, viewed=null, latest=null, status={}, live=true, end=serverNow(), span=600, hover=null, drag=null, historyToken=0, recordsRevision=0, statusRevision=0, snapshotToken=0, receivedAt=0, total=0, rateStart=Date.now(), measuredRate=0, lastRecordRefresh=0, prediction={valid:false,reason:"LEARNING"}, minuteUnits=localStorage.getItem("derivativeUnits")!=="s", calibrations=[], plotRange={min:0,max:250};
 const nice=v=>v===0?'0':Math.abs(v)<1?v.toFixed(2):Math.abs(v)<10?v.toFixed(1):v.toFixed(0);
 const clock=s=>{s=Math.max(0,Math.floor(s));return (s>=3600?Math.floor(s/3600)+':':'')+String(Math.floor(s/60)%60).padStart(2,'0')+':'+String(s%60).padStart(2,'0');};
 const futureSpace=()=>Math.min(prediction.horizon_s||300,span*.5);

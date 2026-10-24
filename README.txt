@@ -1,7 +1,6 @@
-Thermal Scope v0.1.0
+Thermal Scope
 
-See README.md for setup, device discovery, the physical forecast hypothesis,
-protocol requirements, Docker deployment and development checks.
-
-This is the web application only. No firmware, Wi-Fi credentials or personal
-measurement data are distributed.
+See README.md for the current setup and feature documentation.
+See CHANGELOG.md for version history and docs/deployment.md for recovery.
+The companion Thermal Probe firmware is a separate source-only repository.
+No Wi-Fi credentials, firmware binaries or personal measurements are distributed.

@@ -13,14 +13,14 @@ class Element{
  getContext(){return new Proxy({measureText:t=>({width:t.length*6})},{get:(target,key)=>target[key]||(()=>{})});}
  getBoundingClientRect(){return {width:900,height:400,left:0,top:0};}
 }
-function page(wallSeconds=Date.now()/1000){
+function page(wallSeconds=Date.now()/1000,preferences={}){
  let wallMs=wallSeconds*1000,monotonicMs=0;
- const nodes=new Map(),pending=[],streams=[];
+ const nodes=new Map(),pending=[],streams=[],storage=new Map(Object.entries(preferences));
  const node=id=>{if(!nodes.has(id))nodes.set(id,new Element());return nodes.get(id);};
  node('recordingMode').value='coffee';node('tempDiv').value='roast';
  const sandbox={
   document:{getElementById:node,createElement:()=>new Element(),createTextNode:t=>t,querySelector:node,querySelectorAll:()=>[],body:node('body'),documentElement:node('root')},
-  window:{addEventListener(){}},localStorage:{getItem:()=>null,setItem(){}},
+  window:{addEventListener(){}},localStorage:{getItem:key=>storage.get(key)??null,setItem:(key,value)=>storage.set(key,String(value))},
   Date:class extends Date{constructor(...args){super(...(args.length?args:[wallMs]));}static now(){return wallMs;}},
   performance:{now:()=>monotonicMs},devicePixelRatio:1,
   getComputedStyle:()=>({getPropertyValue:()=>''}),requestAnimationFrame(){},
@@ -36,7 +36,7 @@ function page(wallSeconds=Date.now()/1000){
  vm.runInContext(fs.readFileSync(require.resolve('../static/recording.js'),'utf8'),context);
  vm.runInContext(fs.readFileSync(require.resolve('../static/plot-scale.js'),'utf8'),context);
  vm.runInContext(fs.readFileSync(require.resolve('../static/app.js'),'utf8'),context);
- return {pending,stream:streams[0],nodes,state:expression=>vm.runInContext(expression,context),
+ return {pending,stream:streams[0],nodes,storage,state:expression=>vm.runInContext(expression,context),
   advance:seconds=>{wallMs+=seconds*1000;monotonicMs+=seconds*1000;},
   jumpWall:seconds=>{wallMs+=seconds*1000;}};
 }
@@ -52,6 +52,23 @@ function clearBackground(p){
 }
 
 (async()=>{
+ // Display conversion must not change incoming samples or lose a saved unit choice.
+ for(const preference of [null,'min','s']){
+  const u=page(undefined,preference===null?{}:{derivativeUnits:preference});
+  const minutes=preference!=='s';
+  u.state('latest={t:serverNow(),temperature:25,raw:25,d1:.25,d2:-.005};status={connected:true};refreshReading();');
+  assert.equal(u.nodes.get('d1Unit').textContent,minutes?'°C/min':'°C/s');
+  assert.equal(u.nodes.get('d2Unit').textContent,minutes?'°C/min²':'°C/s²');
+  assert.equal(u.nodes.get('d1').textContent,minutes?'15.00':'0.250');
+  assert.equal(u.nodes.get('d2').textContent,minutes?'-18.00':'-0.0050');
+  u.nodes.get('derivativeUnits').onclick();
+  assert.equal(u.storage.get('derivativeUnits'),minutes?'s':'min');
+  assert.equal(u.nodes.get('d1').textContent,minutes?'0.250':'15.00');
+  assert.equal(u.nodes.get('d2').textContent,minutes?'-0.0050':'-18.00');
+  assert.equal(u.state('latest.d1'),.25);assert.equal(u.state('latest.d2'),-.005);
+  const restored=page(undefined,Object.fromEntries(u.storage));
+  assert.equal(restored.state('minuteUnits'),!minutes);
+ }
  const p=page();clearBackground(p);await flush();
  const start=Date.now()/1000-100;
  const run={id:1,start,end:null,mode:'coffee',auto_drop:1,fc_start:null,weight_loss_pct:null};

@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Default derivative readouts to °C/min and °C/min² while preserving saved browser choices and second-based storage/protocol values.
+- Add interface/setup guidance, deployment recovery and publication-readiness documentation.
+
 ## v0.3.0 — 2026-10-21
 
 - GitHub Dark and Paper themes, with persistent per-browser selection and matching chart colors.

@@ -4,6 +4,12 @@ A local-first PT100 temperature instrument for a home server, NAS or desktop. On
 
 **Release history:** see [CHANGELOG.md](CHANGELOG.md). This repository contains the web application only. **Device firmware, compiled firmware, Wi-Fi credentials and personal measurement data are intentionally not distributed.**
 
+## Documentation
+
+- Companion firmware: [Thermal Probe](https://github.com/nenipresotReta/thermal-probe), distributed as source with local Wi-Fi configuration. Repository access is currently restricted; the protocol below also permits an independent compatible device.
+- [Deployment and recovery](docs/deployment.md): local/LAN setup, first-start checks, Docker backup/restore and troubleshooting.
+- [Contributing and publication readiness](CONTRIBUTING.md): verification, license and privacy requirements.
+
 ## Run locally
 
 Requires Python 3.11 or later:
@@ -50,7 +56,7 @@ Use **THEME** in the header to switch between **GitHub Dark** and the original *
 - In **LIVE**, the mouse wheel changes only the temperature upper limit: **0–X°C**. It does not pan vertically, change the time window or pause acquisition.
 - **0–250°C FIXED** restores that exact scale. **AUTO** remains an automatic visible-data range. In HOLD/archive, wheel zoom controls time; dragging pans history.
 - **HOLD** freezes the view while background collection and storage continue. **LIVE** returns to current readings.
-- D1 and D2 switch between °C/s, °C/s² and °C/min, °C/min². Stored values always use seconds.
+- D1 and D2 default to **°C/min and °C/min²**. Switch to °C/s and °C/s² with the units button; an explicitly saved browser choice is preserved. Stored values and the device protocol always use seconds. D1 is multiplied by 60 and D2 by 3600 for minute display.
 - **START** opens a recording. **CHARGE**, **DRY END**, **FC START**, **FC END**, **SC START**, **DROP**, and custom events mark time and temperature. **DROP** ends the recording; acquisition continues.
 - **ARCHIVE** opens saved recordings and CSV export. **FORECAST CSV** exports frozen predictions with parameter snapshots and later observations.
 
