@@ -8,7 +8,7 @@
 
 ## 文档与配套项目
 
-- [Thermal Probe](https://github.com/nenipresotReta/thermal-probe)：ESP32 配套固件，只提供源码，需要本地填写 Wi-Fi。仓库目前访问受限，也可按下方协议使用独立实现的兼容设备。
+- [Thermal Probe](https://github.com/nenipresotReta/thermal-probe)：ESP32 配套固件，只提供源码，需要本地填写 Wi-Fi。也可按下方协议使用独立实现的兼容设备。
 - [部署与恢复](docs/deployment.zh-CN.md)：本地／局域网运行、验收、Docker 备份恢复和排障。
 - [参与开发与公开前检查](CONTRIBUTING.zh-CN.md)。
 

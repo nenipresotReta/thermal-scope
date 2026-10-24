@@ -8,7 +8,7 @@ A local-first PT100 temperature instrument for a home server, NAS or desktop. On
 
 ## Documentation
 
-- Companion firmware: [Thermal Probe](https://github.com/nenipresotReta/thermal-probe), distributed as source with local Wi-Fi configuration. Repository access is currently restricted; the protocol below also permits an independent compatible device.
+- Companion firmware: [Thermal Probe](https://github.com/nenipresotReta/thermal-probe), distributed as source with local Wi-Fi configuration. The protocol below also permits an independent compatible device.
 - [Deployment and recovery](docs/deployment.md): local/LAN setup, first-start checks, Docker backup/restore and troubleshooting.
 - [Contributing and publication readiness](CONTRIBUTING.md): verification, license and privacy requirements.
 
